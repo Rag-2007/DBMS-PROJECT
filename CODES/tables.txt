@@ -1,0 +1,136 @@
+CREATE TABLE Patient (
+    patient_id INT AUTO_INCREMENT PRIMARY KEY,
+    first_name VARCHAR(50) NOT NULL,
+    last_name VARCHAR(50) NOT NULL,
+    dob DATE,
+    gender VARCHAR(10),
+    phone VARCHAR(20),
+    email VARCHAR(100) UNIQUE,
+    address TEXT
+);
+
+CREATE TABLE Department (
+    dept_id INT AUTO_INCREMENT PRIMARY KEY,
+    name VARCHAR(100) UNIQUE NOT NULL,
+    description TEXT,
+    head_staff_id INT
+);
+
+CREATE TABLE Staff (
+    staff_id INT AUTO_INCREMENT PRIMARY KEY,
+    first_name VARCHAR(50) NOT NULL,
+    last_name VARCHAR(50) NOT NULL,
+    role VARCHAR(20),
+    email VARCHAR(100) UNIQUE,
+    phone VARCHAR(20),
+    active BOOLEAN DEFAULT TRUE,
+    hired_date DATE,
+    dept_id INT,
+    FOREIGN KEY (dept_id) REFERENCES Department(dept_id)
+);
+
+ALTER TABLE Department
+ADD CONSTRAINT fk_department_head FOREIGN KEY (head_staff_id) REFERENCES Staff(staff_id);
+
+CREATE TABLE DoctorProfile (
+    doctor_id INT PRIMARY KEY,
+    license_number VARCHAR(50) UNIQUE NOT NULL,
+    years_experience INT,
+    consultation_fee DECIMAL(10,2),
+    office_room VARCHAR(20),
+    primary_specialization VARCHAR(100),
+    efficiency_score DECIMAL(5,2),
+    FOREIGN KEY (doctor_id) REFERENCES Staff(staff_id)
+);
+
+CREATE TABLE Appointment (
+    appointment_id INT AUTO_INCREMENT PRIMARY KEY,
+    patient_id INT NOT NULL,
+    doctor_id INT NOT NULL,
+    scheduled_at DATETIME NOT NULL,
+    status VARCHAR(20) DEFAULT 'Scheduled',
+    reason TEXT,
+    preferred_dept INT,
+    booked_by INT,
+    UNIQUE(patient_id, doctor_id, scheduled_at),
+    FOREIGN KEY (patient_id) REFERENCES Patient(patient_id),
+    FOREIGN KEY (doctor_id) REFERENCES DoctorProfile(doctor_id),
+    FOREIGN KEY (preferred_dept) REFERENCES Department(dept_id),
+    FOREIGN KEY (booked_by) REFERENCES Staff(staff_id)
+);
+
+CREATE TABLE Visit (
+    visit_id INT AUTO_INCREMENT PRIMARY KEY,
+    appointment_id INT NOT NULL,
+    visit_type VARCHAR(15),
+    checkin_time DATETIME,
+    checkout_time DATETIME,
+    diagnosis TEXT,
+    FOREIGN KEY (appointment_id) REFERENCES Appointment(appointment_id)
+);
+
+CREATE TABLE Admission (
+    visit_id INT PRIMARY KEY,
+    admission_number VARCHAR(50) UNIQUE NOT NULL,
+    admission_time DATETIME,
+    room_number VARCHAR(20),
+    admission_reason TEXT,
+    FOREIGN KEY (visit_id) REFERENCES Visit(visit_id)
+);
+
+CREATE TABLE Vitals (
+    vitals_id INT AUTO_INCREMENT PRIMARY KEY,
+    visit_id INT NOT NULL,
+    recorded_by INT NOT NULL,
+    recorded_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    temperature DECIMAL(4,1),
+    pulse INT,
+    systolic INT,
+    diastolic INT,
+    spo2 INT,
+    respiratory_rate INT,
+    FOREIGN KEY (visit_id) REFERENCES Visit(visit_id),
+    FOREIGN KEY (recorded_by) REFERENCES Staff(staff_id)
+);
+
+CREATE TABLE LabOrder (
+    lab_order_id INT AUTO_INCREMENT PRIMARY KEY,
+    visit_id INT NOT NULL,
+    ordered_by INT,
+    collected_by INT,
+    test_name VARCHAR(100) NOT NULL,
+    status VARCHAR(20) DEFAULT 'Ordered',
+    ordered_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    collected_at DATETIME,
+    FOREIGN KEY (visit_id) REFERENCES Visit(visit_id),
+    FOREIGN KEY (ordered_by) REFERENCES DoctorProfile(doctor_id),
+    FOREIGN KEY (collected_by) REFERENCES Staff(staff_id)
+);
+
+CREATE TABLE LabResult (
+    lab_result_id INT AUTO_INCREMENT PRIMARY KEY,
+    lab_order_id INT NOT NULL,
+    reported_by INT,
+    result TEXT,
+    units VARCHAR(20),
+    reference_range VARCHAR(50),
+    reported_at DATETIME,
+    FOREIGN KEY (lab_order_id) REFERENCES LabOrder(lab_order_id),
+    FOREIGN KEY (reported_by) REFERENCES Staff(staff_id)
+);
+
+CREATE TABLE Bill (
+    bill_id INT AUTO_INCREMENT PRIMARY KEY,
+    visit_id INT UNIQUE NOT NULL,
+    total_amount DECIMAL(10,2),
+    status VARCHAR(20) DEFAULT 'Unpaid',
+    FOREIGN KEY (visit_id) REFERENCES Visit(visit_id)
+);
+
+CREATE TABLE Feedback (
+    feedback_id INT AUTO_INCREMENT PRIMARY KEY,
+    visit_id INT UNIQUE NOT NULL,
+    score INT,
+    comment TEXT,
+    FOREIGN KEY (visit_id) REFERENCES Visit(visit_id)
+);

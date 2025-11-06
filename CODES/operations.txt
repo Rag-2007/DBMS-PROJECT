@@ -1,0 +1,289 @@
+DELIMITER $$
+
+CREATE FUNCTION fn_visit_duration(p_visit_id INT) RETURNS INT
+DETERMINISTIC
+BEGIN
+  DECLARE v_minutes INT;
+  SELECT TIMESTAMPDIFF(MINUTE, checkin_time, checkout_time) INTO v_minutes
+  FROM Visit WHERE visit_id = p_visit_id;
+  RETURN IFNULL(v_minutes, 0);
+END$$
+
+CREATE FUNCTION get_patient_age(p_patient_id INT) RETURNS INT
+DETERMINISTIC
+BEGIN
+  DECLARE v_age INT;
+  SELECT TIMESTAMPDIFF(YEAR, dob, CURDATE()) INTO v_age
+  FROM Patient
+  WHERE patient_id = p_patient_id;
+  RETURN IFNULL(v_age, 0);
+END$$
+
+CREATE FUNCTION get_patient_no_of_tests(p_patient_id INT, p_from DATETIME, p_to DATETIME) RETURNS INT
+DETERMINISTIC
+BEGIN
+  DECLARE v_count INT DEFAULT 0;
+  SELECT COUNT(DISTINCT lo.lab_order_id) INTO v_count
+  FROM LabOrder lo
+  JOIN Visit v ON lo.visit_id = v.visit_id
+  JOIN Appointment a ON v.appointment_id = a.appointment_id
+  WHERE a.patient_id = p_patient_id
+    AND (p_from IS NULL OR v.checkin_time >= p_from)
+    AND (p_to IS NULL OR v.checkin_time <= p_to);
+  RETURN IFNULL(v_count, 0);
+END$$
+
+CREATE FUNCTION calc_efficiency(p_doctor_id INT, p_from DATETIME, p_to DATETIME) RETURNS DECIMAL(5,2)
+DETERMINISTIC
+BEGIN
+  DECLARE v_patients INT DEFAULT 0;
+  DECLARE v_avg_duration DECIMAL(8,2) DEFAULT 0;
+  DECLARE v_avg_feedback DECIMAL(8,2) DEFAULT 0;
+  DECLARE v_score DECIMAL(5,2) DEFAULT 0;
+
+  SELECT COUNT(*) INTO v_patients
+  FROM Visit v
+  JOIN Appointment a ON v.appointment_id = a.appointment_id
+  WHERE a.doctor_id = p_doctor_id
+    AND (p_from IS NULL OR v.checkin_time >= p_from)
+    AND (p_to IS NULL OR v.checkin_time <= p_to);
+
+  SELECT AVG(TIMESTAMPDIFF(MINUTE, v.checkin_time, v.checkout_time)) INTO v_avg_duration
+  FROM Visit v
+  JOIN Appointment a ON v.appointment_id = a.appointment_id
+  WHERE a.doctor_id = p_doctor_id
+    AND (p_from IS NULL OR v.checkin_time >= p_from)
+    AND (p_to IS NULL OR v.checkin_time <= p_to)
+    AND v.checkout_time IS NOT NULL;
+
+  SELECT AVG(f.score) INTO v_avg_feedback
+  FROM Feedback f
+  JOIN Visit v ON f.visit_id = v.visit_id
+  JOIN Appointment a ON v.appointment_id = a.appointment_id
+  WHERE a.doctor_id = p_doctor_id
+    AND (p_from IS NULL OR v.checkin_time >= p_from)
+    AND (p_to IS NULL OR v.checkin_time <= p_to);
+
+  IF v_avg_duration IS NULL THEN SET v_avg_duration = 0; END IF;
+  IF v_avg_feedback IS NULL THEN SET v_avg_feedback = 0; END IF;
+
+  SET v_score =
+    (LEAST(v_patients,50) / 50.0) * 40
+    + (v_avg_feedback / 5.0) * 40
+    + (CASE WHEN v_avg_duration > 0 THEN ((30 - LEAST(v_avg_duration,30)) / 30.0) * 20 ELSE 0 END);
+
+  RETURN ROUND(v_score,2);
+END$$
+
+CREATE FUNCTION get_active_unpaid_patients_count(p_doctor_id INT, p_from DATETIME, p_to DATETIME) RETURNS INT
+DETERMINISTIC
+BEGIN
+  DECLARE v INT;
+  SELECT COUNT(DISTINCT a.patient_id) INTO v
+  FROM Bill b
+  JOIN Visit v1 ON v1.visit_id = b.visit_id
+  JOIN Appointment a ON a.appointment_id = v1.appointment_id
+  WHERE b.status IN ('Unpaid','PartiallyPaid')
+    AND (p_doctor_id IS NULL OR a.doctor_id = p_doctor_id)
+    AND (p_from IS NULL OR v1.checkin_time >= p_from)
+    AND (p_to IS NULL OR v1.checkin_time <= p_to);
+  RETURN IFNULL(v,0);
+END$$
+
+CREATE PROCEDURE sp_update_doctor_efficiency(IN p_doctor_id INT, IN p_from DATETIME, IN p_to DATETIME)
+BEGIN
+  DECLARE v_score DECIMAL(5,2);
+  SET v_score = calc_efficiency(p_doctor_id, p_from, p_to);
+  UPDATE DoctorProfile SET efficiency_score = v_score WHERE doctor_id = p_doctor_id;
+END$$
+
+CREATE PROCEDURE sp_add_charge(IN p_visit_id INT, IN p_amount DECIMAL(10,2))
+BEGIN
+  UPDATE Bill
+  SET total_amount = COALESCE(total_amount,0) + p_amount
+  WHERE visit_id = p_visit_id;
+END$$
+
+CREATE PROCEDURE sp_create_visit_with_optional_admission(
+  IN p_appointment_id INT,
+  IN p_visit_type VARCHAR(15),
+  IN p_admission_number VARCHAR(50),
+  IN p_room_number VARCHAR(20),
+  IN p_admission_time DATETIME,
+  OUT p_visit_id INT
+)
+BEGIN
+  INSERT INTO Visit (appointment_id, visit_type, checkin_time)
+  VALUES (p_appointment_id, p_visit_type, COALESCE(p_admission_time, NOW()));
+  SET p_visit_id = LAST_INSERT_ID();
+  IF p_visit_type = 'Inpatient' THEN
+    IF p_admission_number IS NULL THEN
+      SET p_admission_number = CONCAT('ADM-', DATE_FORMAT(NOW(),'%Y%m%d'), '-', p_visit_id);
+    END IF;
+    INSERT INTO Admission (visit_id, admission_number, admission_time, room_number)
+    VALUES (p_visit_id, p_admission_number, COALESCE(p_admission_time, NOW()), p_room_number);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM Bill WHERE visit_id = p_visit_id) THEN
+    INSERT INTO Bill (visit_id, total_amount, status) VALUES (p_visit_id, 0.00, 'Unpaid');
+  END IF;
+END$$
+
+CREATE PROCEDURE sp_discharge_patient(IN p_visit_id INT, IN p_discharge_time DATETIME)
+BEGIN
+  UPDATE Visit SET checkout_time = p_discharge_time WHERE visit_id = p_visit_id;
+END$$
+
+CREATE PROCEDURE sp_list_active_unpaid_patients(
+  IN p_doctor_id INT,
+  IN p_from DATETIME,
+  IN p_to DATETIME,
+  IN p_limit INT
+)
+BEGIN
+  IF p_limit IS NULL OR p_limit <= 0 THEN
+    SET p_limit = 100;
+  END IF;
+
+  SELECT
+    p.patient_id,
+    p.first_name,
+    p.last_name,
+    COUNT(*)            AS unpaid_visits,
+    SUM(b.total_amount) AS total_due,
+    MAX(v.checkin_time) AS last_visit
+  FROM Bill b
+  JOIN Visit v        ON v.visit_id = b.visit_id
+  JOIN Appointment a  ON a.appointment_id = v.appointment_id
+  JOIN Patient p      ON p.patient_id = a.patient_id
+  WHERE b.status IN ('Unpaid','PartiallyPaid')
+    AND (p_doctor_id IS NULL OR a.doctor_id = p_doctor_id)
+    AND (p_from IS NULL OR v.checkin_time >= p_from)
+    AND (p_to   IS NULL OR v.checkin_time <= p_to)
+  GROUP BY p.patient_id, p.first_name, p.last_name
+  ORDER BY total_due DESC, last_visit DESC
+  LIMIT p_limit;
+END$$
+
+DROP TRIGGER IF EXISTS trg_vitals_before_insert$$
+CREATE TRIGGER trg_vitals_before_insert
+BEFORE INSERT ON Vitals
+FOR EACH ROW
+BEGIN
+  DECLARE r VARCHAR(20);
+  SELECT role INTO r FROM Staff WHERE staff_id = NEW.recorded_by;
+  IF r IS NULL THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Vitals.recorded_by: staff not found';
+  END IF;
+  IF r <> 'Nurse' THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Only staff with role = Nurse can record vitals';
+  END IF;
+END$$
+
+DROP TRIGGER IF EXISTS trg_laborder_before_insert$$
+CREATE TRIGGER trg_laborder_before_insert
+BEFORE INSERT ON LabOrder
+FOR EACH ROW
+BEGIN
+  DECLARE r2 VARCHAR(20);
+
+  IF NEW.ordered_by IS NOT NULL THEN
+    IF NOT EXISTS (SELECT 1 FROM DoctorProfile WHERE doctor_id = NEW.ordered_by) THEN
+      SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'LabOrder.ordered_by must refer to a valid DoctorProfile';
+    END IF;
+  END IF;
+
+  IF NEW.collected_by IS NOT NULL THEN
+    SELECT role INTO r2 FROM Staff WHERE staff_id = NEW.collected_by;
+    IF r2 IS NULL OR r2 <> 'LabTech' THEN
+      SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'LabOrder.collected_by must be a LabTech';
+    END IF;
+  END IF;
+END$$
+
+DROP TRIGGER IF EXISTS trg_labresult_before_insert$$
+CREATE TRIGGER trg_labresult_before_insert
+BEFORE INSERT ON LabResult
+FOR EACH ROW
+BEGIN
+  DECLARE r3 VARCHAR(20);
+
+  IF NEW.reported_by IS NOT NULL THEN
+    SELECT role INTO r3 FROM Staff WHERE staff_id = NEW.reported_by;
+    IF r3 IS NULL OR r3 <> 'LabTech' THEN
+      SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'LabResult.reported_by must be a LabTech';
+    END IF;
+  END IF;
+END$$
+
+DROP TRIGGER IF EXISTS trg_admission_before_insert$$
+CREATE TRIGGER trg_admission_before_insert
+BEFORE INSERT ON Admission
+FOR EACH ROW
+BEGIN
+  DECLARE v_type VARCHAR(15);
+  SELECT visit_type INTO v_type FROM Visit WHERE visit_id = NEW.visit_id;
+  IF v_type IS NULL THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Admission.visit_id does not reference an existing Visit';
+  END IF;
+  IF v_type <> 'Inpatient' THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Admission can be created only for Visit with visit_type = Inpatient';
+  END IF;
+END$$
+
+DROP TRIGGER IF EXISTS trg_visit_after_insert_create_bill$$
+CREATE TRIGGER trg_visit_after_insert_create_bill
+AFTER INSERT ON Visit
+FOR EACH ROW
+BEGIN
+  DECLARE v_bill_exists INT DEFAULT 0;
+  DECLARE v_fee DECIMAL(10,2) DEFAULT 0.00;
+  DECLARE v_current_total DECIMAL(10,2) DEFAULT 0.00;
+
+  SELECT COUNT(*) INTO v_bill_exists FROM Bill WHERE visit_id = NEW.visit_id;
+
+  IF v_bill_exists = 0 THEN
+    INSERT INTO Bill (visit_id, total_amount, status) VALUES (NEW.visit_id, 0.00, 'Unpaid');
+  END IF;
+
+  SELECT total_amount INTO v_current_total FROM Bill WHERE visit_id = NEW.visit_id LIMIT 1;
+
+  SELECT dp.consultation_fee INTO v_fee
+  FROM Appointment a
+  JOIN DoctorProfile dp ON a.doctor_id = dp.doctor_id
+  WHERE a.appointment_id = NEW.appointment_id
+  LIMIT 1;
+
+  IF v_fee IS NOT NULL AND v_fee > 0 AND (v_current_total IS NULL OR v_current_total = 0) THEN
+    CALL sp_add_charge(NEW.visit_id, v_fee);
+  END IF;
+END$$
+
+DROP TRIGGER IF EXISTS trg_labresult_after_insert$$
+CREATE TRIGGER trg_labresult_after_insert
+AFTER INSERT ON LabResult
+FOR EACH ROW
+BEGIN
+  UPDATE LabOrder SET status = 'Completed', collected_at = COALESCE(collected_at, NEW.reported_at)
+  WHERE lab_order_id = NEW.lab_order_id;
+END$$
+
+DROP TRIGGER IF EXISTS trg_feedback_after_insert$$
+CREATE TRIGGER trg_feedback_after_insert
+AFTER INSERT ON Feedback
+FOR EACH ROW
+BEGIN
+  DECLARE v_doctor INT;
+  DECLARE from_dt DATETIME;
+  DECLARE to_dt DATETIME;
+  SELECT a.doctor_id INTO v_doctor
+    FROM Appointment a
+    JOIN Visit v ON v.appointment_id = a.appointment_id
+    WHERE v.visit_id = NEW.visit_id;
+  IF v_doctor IS NOT NULL THEN
+    SET from_dt = DATE_SUB(NOW(), INTERVAL 1 MONTH);
+    SET to_dt = NOW();
+    CALL sp_update_doctor_efficiency(v_doctor, from_dt, to_dt);
+  END IF;
+END$$
+
+DELIMITER ;
