@@ -1,6 +1,6 @@
-# 🏥 Hospital Management System Database
+#  Hospital Management System Database
 
-## 📘 Problem Statement
+##  Problem Statement
 
 Hospitals manage vast amounts of data every day — including patients, doctors, appointments, lab results, and billing information.  
 Manual or poorly structured data handling can lead to **inefficiency**, **human errors**, and **difficulty in performance tracking** and **payment management**.
@@ -13,7 +13,7 @@ Using **SQL functions, stored procedures, and triggers**, the system maintains *
 
 ---
 
-## 🎯 Objectives
+## Objectives
 
 1. **Centralized Database Design**  
    Develop a normalized, relational database for managing patients, staff, appointments, and billing efficiently.
@@ -35,7 +35,7 @@ Using **SQL functions, stored procedures, and triggers**, the system maintains *
 
 ---
 
-📊 **Technologies Used**
+**Technologies Used**
 - SQL (Functions, Procedures, Triggers)
 - Relational Database Design (Normalization)
 - Role-Based Access Control (RBAC)
@@ -43,5 +43,5 @@ Using **SQL functions, stored procedures, and triggers**, the system maintains *
 
 ---
 
-💡 **Outcome**
+**Outcome**
 A fully automated and reliable **Hospital Management System Database** that improves operational efficiency, ensures data integrity, and provides actionable insights for better hospital administration.
